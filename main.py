@@ -5,6 +5,10 @@ from models.blog import Post
 from controller.user_controller import user_router
 from controller.post_controller import post_router
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+load_dotenv()
+
 Base.metadata.create_all(bind=engine)
 
 
