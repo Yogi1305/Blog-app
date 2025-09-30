@@ -11,6 +11,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jwt.exceptions import InvalidTokenError
 import os
 from dotenv import load_dotenv
+dotnev=os.path.join(os.path.dirname(__file__), '.env')
 
 load_dotenv()
 
