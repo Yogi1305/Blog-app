@@ -7,7 +7,7 @@ from typing import Optional
 class PostCreate(BaseModel):
     title: str
     content: str
-    published: bool = False
+    
    
 
 
@@ -15,4 +15,4 @@ class PostCreate(BaseModel):
 class PostUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
-    published: Optional[bool] = None
+   

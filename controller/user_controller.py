@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException,Response,Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from models.user import User
@@ -13,9 +13,11 @@ from jwt.exceptions import InvalidTokenError
 user_router = APIRouter()
 
 # JWT settings
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+SECRET_KEY = "YOGESH"
+REFRESH_SECRET_KEY = "RITIKA"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -25,6 +27,13 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# utility: create refresh token
+def create_refresh_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
 
 # ---------------- REGISTER ----------------
 @user_router.post("/register")
@@ -51,7 +60,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
 # ---------------- LOGIN ----------------
 @user_router.post("/login")
-def login(user: UserLogin, db: Session = Depends(get_db)):
+def login(user: UserLogin,response:Response, db: Session = Depends(get_db)):
     stmt = select(User).where(User.email == user.email)
     result = db.execute(stmt)  
     db_user = result.scalar_one_or_none()
@@ -65,43 +74,80 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 
     # create token
     token = create_access_token({"sub": db_user.email, "user_id": db_user.id})
+    refresh_token = create_refresh_token({"sub": db_user.email, "user_id": db_user.id})
+    response.set_cookie(key="access_token",
+                        
+        value=token,
+        httponly=True,
+        secure=True,   
+        samesite="lax")
+    response.set_cookie(key="refresh_token",
+                        value=refresh_token,
+                        httponly=True,
+                        secure=True,   
+                        samesite="lax")
 
-    return {"access_token": token, "token_type": "bearer"}
+    return {"access_token": token, "token_type": "bearer","refresh_token": refresh_token}
 
 # ---------------- LOGOUT ----------------
-# JWT is stateless, so we can’t really “invalidate” tokens unless we use a blacklist.
-# Simple approach: logout on frontend by deleting token
-blacklist = set()
 
 @user_router.post("/logout")
-def logout(token: str = Depends(oauth2_scheme)):
-    blacklist.add(token)
+def logout(response:Response,token: str = Depends(oauth2_scheme)):
+    response.delete_cookie(key="access_token")
+    response.delete_cookie(key="refresh_token")
+   
     return {"message": "Logged out successfully"}
 
 # ---------------- PROTECTED ROUTE ----------------
-@user_router.get("/me")
-def get_me(token: str = Depends(oauth2_scheme)):
-    if token in blacklist:
-        raise HTTPException(status_code=401, detail="Token has been revoked")
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return {"user": payload}
-    except InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+# refresh token
+@user_router.post("/refresh")
+def refresh_token(request: Request, response: Response, db: Session = Depends(get_db)):
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token missing")
 
-
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(refresh_token, REFRESH_SECRET_KEY, algorithms=[ALGORITHM])
         user_id: int = payload.get("user_id")
         if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
 
         stmt = select(User).where(User.id == user_id)
         result = db.execute(stmt)
         user = result.scalar_one_or_none()
         if user is None:
             raise HTTPException(status_code=401, detail="User not found")
-        return user  # return full user object
+
+        new_access_token = create_access_token({"sub": user.email, "user_id": user.id})
+        response.set_cookie(key="access_token",
+                            value=new_access_token,
+                            httponly=True,
+                            secure=True,   
+                            samesite="lax")
+        return {"access_token": new_access_token, "token_type": "bearer"}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
     except InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)):
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Token missing")
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = payload.get("user_id")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Access token expired")
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    stmt = select(User).where(User.id == user_id)
+    result = db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return user
