@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException,Response,Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from fastapi.responses import JSONResponse
 from models.user import User
 from schema.user_schema import UserCreate, Userlogin as UserLogin
 from config.db_config import get_db
@@ -80,19 +81,36 @@ def login(user: UserLogin,response:Response, db: Session = Depends(get_db)):
     # create token
     token = create_access_token({"sub": db_user.email, "user_id": db_user.id})
     refresh_token = create_refresh_token({"sub": db_user.email, "user_id": db_user.id})
+
+    response = JSONResponse(
+        content={
+            "message": "Login successful",
+            "access_token": token,
+            "refresh_token": refresh_token
+        }
+    )
+    
     response.set_cookie(key="access_token",
                         
         value=token,
-        httponly=True,
-        secure=True,   
-        samesite="lax")
+          httponly=True,
+    secure=False,  # must be False for localhost
+    samesite="lax",
+    path="/"
+       
+        )
     response.set_cookie(key="refresh_token",
                         value=refresh_token,
                         httponly=True,
-                        secure=True,   
-                        samesite="lax")
+                        
+    secure=False,  # must be False for localhost
+    samesite="lax",
+    path="/"
+                           
+                        )
+    
 
-    return {"access_token": token, "token_type": "bearer","refresh_token": refresh_token}
+    return response
 
 # ---------------- LOGOUT ----------------
 
@@ -135,9 +153,16 @@ def refresh_token(request: Request, response: Response, db: Session = Depends(ge
     except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-
 def get_current_user(request: Request, db: Session = Depends(get_db)):
+    # 1. Try to read from cookies
     token = request.cookies.get("access_token")
+
+    # 2. If not in cookies, try Authorization header
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+
     if not token:
         raise HTTPException(status_code=401, detail="Token missing")
 
@@ -146,8 +171,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         user_id: int = payload.get("user_id")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Access token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except jwt.JWTError:
+          raise HTTPException(status_code=401, detail="Invalid token")
 
     stmt = select(User).where(User.id == user_id)
     result = db.execute(stmt)
